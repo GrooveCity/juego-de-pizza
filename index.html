@@ -1,0 +1,980 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Juego de Pizza 3D</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600;700&family=Poppins:wght@400;600;800&display=swap" rel="stylesheet">
+
+    <!-- Three.js Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <!-- React and ReactDOM CDN -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    
+    <!-- Babel standalone for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: manipulation;
+        }
+        body {
+            font-family: 'Fredoka', 'Poppins', sans-serif;
+            background-color: #0d1117;
+            color: #ffffff;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        .font-fredoka {
+            font-family: 'Fredoka', sans-serif;
+        }
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(0,0,0,0.2);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #f59e0b;
+            border-radius: 4px;
+        }
+        .pizza-btn {
+            transition: transform 0.1s ease, box-shadow 0.1s ease;
+        }
+        .pizza-btn:active {
+            transform: scale(0.95);
+        }
+        /* Pulse Animation */
+        @keyframes pulseGlow {
+            0%, 100% { box-shadow: 0 0 15px rgba(245, 158, 11, 0.6); }
+            50% { box-shadow: 0 0 25px rgba(245, 158, 11, 0.9); }
+        }
+        .glow-pulse {
+            animation: pulseGlow 2s infinite;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // --- SISTEMA DE AUDIO ACÚSTICO / SINTETIZADO CON WEB AUDIO API ---
+        class AudioController {
+            constructor() {
+                this.ctx = null;
+                this.musicInterval = null;
+                this.isMuted = false;
+            }
+
+            init() {
+                if (!this.ctx) {
+                    const AudioContext = window.AudioContext || window.webkitAudioContext;
+                    if (AudioContext) this.ctx = new AudioContext();
+                }
+            }
+
+            playTone(freq, type, duration, gainVal = 0.1) {
+                if (this.isMuted) return;
+                this.init();
+                if (!this.ctx) return;
+
+                try {
+                    const osc = this.ctx.createOscillator();
+                    const gain = this.ctx.createGain();
+                    osc.type = type;
+                    osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+                    gain.gain.setValueAtTime(gainVal, this.ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.0001, this.ctx.currentTime + duration);
+
+                    osc.connect(gain);
+                    gain.connect(this.ctx.destination);
+
+                    osc.start();
+                    osc.stop(this.ctx.currentTime + duration);
+                } catch (e) {}
+            }
+
+            playSplat() {
+                this.playTone(180, 'sine', 0.15, 0.2);
+                setTimeout(() => this.playTone(110, 'triangle', 0.2, 0.15), 50);
+            }
+
+            playStretch() {
+                this.playTone(120, 'sawtooth', 0.25, 0.1);
+            }
+
+            playSuccess() {
+                if (this.isMuted) return;
+                this.init();
+                const notes = [261.63, 329.63, 392.00, 523.25];
+                notes.forEach((n, i) => {
+                    setTimeout(() => this.playTone(n, 'triangle', 0.2, 0.15), i * 80);
+                });
+            }
+
+            playBell() {
+                this.playTone(880, 'sine', 0.6, 0.25);
+            }
+
+            playOvenTimer() {
+                this.playTone(600, 'square', 0.05, 0.05);
+            }
+
+            playBurn() {
+                this.playTone(90, 'sawtooth', 0.6, 0.3);
+            }
+
+            toggleMute() {
+                this.isMuted = !this.isMuted;
+                return this.isMuted;
+            }
+        }
+
+        const audio = new AudioController();
+
+        // --- BASE DE DATOS DE RECETAS E INGREDIENTES ---
+        const INGREDIENTES_DISPONIBLES = [
+            { id: 'oregano', nombre: 'Orégano', color: 0x4d7c0f, icon: '🌿' },
+            { id: 'jamon', nombre: 'Jamón', color: 0xf43f5e, icon: '🥓' },
+            { id: 'morron', nombre: 'Morrón', color: 0xd97706, icon: '🫑' },
+            { id: 'pepperoni', nombre: 'Pepperoni', color: 0xb91c1c, icon: '🍕' },
+            { id: 'aceitunas', nombre: 'Aceitunas', color: 0x1e293b, icon: '🫒' },
+            { id: 'champinon', nombre: 'Champiñones', color: 0xa8a29e, icon: '🍄' }
+        ];
+
+        const BEBIDAS_DISPONIBLES = [
+            { id: 'coca', nombre: 'Coca Cola', color: '#dc2626', icon: '🥤', nivelMin: 2 },
+            { id: 'pepsi', nombre: 'Pepsi', color: '#2563eb', icon: '🥤', nivelMin: 3 },
+            { id: 'fanta', nombre: 'Fanta', color: '#f97316', icon: '🥤', nivelMin: 4 },
+            { id: 'sprite', nombre: 'Sprite', color: '#10b981', icon: '🥤', nivelMin: 5 },
+            { id: 'sevenup', nombre: '7 Up', color: '#059669', icon: '🥤', nivelMin: 6 }
+        ];
+
+        const ACOMPANAMIENTOS_DISPONIBLES = [
+            { id: 'pan_ajo', nombre: 'Pan con Ajo', icon: '🥖', nivelMin: 3 },
+            { id: 'focaccia', nombre: 'Focaccia', icon: '🍞', nivelMin: 5 },
+            { id: 'bastones', nombre: 'Bastones de Queso', icon: '🧀', nivelMin: 7 }
+        ];
+
+        const RECETAS = [
+            { id: 'muzzarella', nombre: 'Muzzarella con Orégano', ingredientes: ['oregano'] },
+            { id: 'especial', nombre: 'Especial Jamón y Morrón', ingredientes: ['jamon', 'morron'] },
+            { id: 'pepperoni', nombre: 'Pepperoni Supremo', ingredientes: ['pepperoni', 'oregano'] },
+            { id: 'completa', nombre: 'Pizza Completa', ingredientes: ['jamon', 'morron', 'aceitunas', 'oregano'] },
+            { id: 'champinones', nombre: 'Pizza de Champiñones', ingredientes: ['champinon', 'oregano'] }
+        ];
+
+        // --- COMPONENTE PRINCIPAL ---
+        function App() {
+            // Estado de juego
+            const [nivel, setNivel] = useState(1);
+            const [monedas, setMonedas] = useState(100);
+            const [puntos, setPuntos] = useState(0);
+            const [faseDia, setFaseDia] = useState('tarde'); // 'amanecer', 'tarde', 'madrugada'
+            const [tiempoDia, setTiempoDia] = useState(100); // 100% a 0%
+            
+            const [clienteActual, setClienteActual] = useState(null);
+            const [pacienciaCliente, setPacienciaCliente] = useState(100);
+
+            // Estado de preparación de la pizza
+            const [pasoPizza, setPasoPizza] = useState(1); // 1: Masa, 2: Salsa, 3: Queso, 4: Ingredientes, 5: Horno, 6: Servir
+            const [masaEstirada, setMasaEstirada] = useState(0); // 0 a 100
+            const [tieneSalsa, setTieneSalsa] = useState(false);
+            const [tieneQueso, setTieneQueso] = useState(false);
+            const [ingredientesAgregados, setIngredientesAgregados] = useState([]);
+            
+            // Estado Horno
+            const [enHorno, setEnHorno] = useState(false);
+            const [nivelCoccion, setNivelCoccion] = useState(0); // 0 a 100 (Optimo: 70-90, Quemado > 95)
+            const [pizzaServida, setPizzaServida] = useState(false);
+
+            // Bebidas y Acompañamientos elegidos para el pedido actual
+            const [bebidaServida, setBebidaServida] = useState(null);
+            const [acompanamientoServido, setAcompanamientoServido] = useState(null);
+
+            // Menús y Diálogos
+            const [juegoPausado, setJuegoPausado] = useState(false);
+            const [mensajeFeedback, setMensajeFeedback] = useState(null);
+            const [resumenMadrugada, setResumenMadrugada] = useState(false);
+            const [balanceDia, setBalanceDia] = useState({ clientesAtendidos: 0, ganancias: 0 });
+
+            // Referencia de Canvas Three.js
+            const mountRef = useRef(null);
+            const sceneRef = useRef(null);
+            const pizzaMeshRef = useRef(null);
+            const salsaMeshRef = useRef(null);
+            const quesoMeshRef = useRef(null);
+            const ingredientesGroupRef = useRef(null);
+            const ovenLightRef = useRef(null);
+
+            // Cargar progreso guardado al iniciar
+            useEffect(() => {
+                const guardado = localStorage.getItem('juego_pizza_progreso');
+                if (guardado) {
+                    try {
+                        const data = JSON.parse(guardado);
+                        setNivel(data.nivel || 1);
+                        setMonedas(data.monedas || 100);
+                        setPuntos(data.puntos || 0);
+                    } catch(e) {}
+                }
+            }, []);
+
+            // Guardar progreso automáticamente
+            useEffect(() => {
+                localStorage.setItem('juego_pizza_progreso', JSON.stringify({
+                    nivel,
+                    monedas,
+                    puntos
+                }));
+            }, [nivel, monedas, puntos]);
+
+            // --- INICIALIZACIÓN DE ESCENA THREE.JS ---
+            useEffect(() => {
+                const width = mountRef.current.clientWidth;
+                const height = mountRef.current.clientHeight;
+
+                // Escena, Cámara y Renderer
+                const scene = new THREE.Scene();
+                sceneRef.current = scene;
+                scene.background = new THREE.Color(0x1e1b18);
+
+                const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
+                camera.position.set(0, 3.5, 4.2);
+                camera.lookAt(0, 0.4, 0);
+
+                const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+                renderer.setSize(width, height);
+                renderer.shadowMap.enabled = true;
+                renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+                mountRef.current.appendChild(renderer.domElement);
+
+                // Luces
+                const ambientLight = new THREE.AmbientLight(0xfff5ea, 0.7);
+                scene.add(ambientLight);
+
+                const mainLight = new THREE.DirectionalLight(0xfff0dd, 1.2);
+                mainLight.position.set(3, 6, 4);
+                mainLight.castShadow = true;
+                mainLight.shadow.mapSize.width = 1024;
+                mainLight.shadow.mapSize.height = 1024;
+                scene.add(mainLight);
+
+                // Luz de ambiente horno
+                const ovenLight = new THREE.PointLight(0xff6600, 0, 4);
+                ovenLight.position.set(-2, 1, -1);
+                scene.add(ovenLight);
+                ovenLightRef.current = ovenLight;
+
+                // --- OBJETOS DE LA COCINA 3D ---
+                // Mostrador / Mesada de Madera o Granito
+                const counterGeo = new THREE.BoxGeometry(5, 0.8, 2.5);
+                const counterMat = new THREE.MeshStandardMaterial({ color: 0x3e2723, roughness: 0.4 });
+                const counter = new THREE.Mesh(counterGeo, counterMat);
+                counter.position.set(0, -0.4, 0);
+                counter.receiveShadow = true;
+                scene.add(counter);
+
+                // Tabla de cortar redonda
+                const boardGeo = new THREE.CylinderGeometry(1.4, 1.4, 0.08, 32);
+                const boardMat = new THREE.MeshStandardMaterial({ color: 0x8d5b4c, roughness: 0.6 });
+                const board = new THREE.Mesh(boardGeo, boardMat);
+                board.position.set(0, 0.04, 0);
+                board.receiveShadow = true;
+                scene.add(board);
+
+                // PIZZA BASE (Masa)
+                const pizzaGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.05, 32);
+                const pizzaMat = new THREE.MeshStandardMaterial({ color: 0xf5d0a9, roughness: 0.8 });
+                const pizzaMesh = new THREE.Mesh(pizzaGeo, pizzaMat);
+                pizzaMesh.position.set(0, 0.09, 0);
+                pizzaMesh.castShadow = true;
+                scene.add(pizzaMesh);
+                pizzaMeshRef.current = pizzaMesh;
+
+                // SALSA MESH
+                const salsaGeo = new THREE.CylinderGeometry(0.28, 0.28, 0.02, 32);
+                const salsaMat = new THREE.MeshStandardMaterial({ color: 0x991b1b, roughness: 0.5 });
+                const salsaMesh = new THREE.Mesh(salsaGeo, salsaMat);
+                salsaMesh.position.set(0, 0.12, 0);
+                salsaMesh.visible = false;
+                scene.add(salsaMesh);
+                salsaMeshRef.current = salsaMesh;
+
+                // QUESO MESH
+                const quesoGeo = new THREE.CylinderGeometry(0.26, 0.26, 0.02, 32);
+                const quesoMat = new THREE.MeshStandardMaterial({ color: 0xfef08a, roughness: 0.6 });
+                const quesoMesh = new THREE.Mesh(quesoGeo, quesoMat);
+                quesoMesh.position.set(0, 0.13, 0);
+                quesoMesh.visible = false;
+                scene.add(quesoMesh);
+                quesoMeshRef.current = quesoMesh;
+
+                // Grupo para Ingredientes Varios
+                const ingredientesGroup = new THREE.Group();
+                ingredientesGroup.position.set(0, 0.14, 0);
+                scene.add(ingredientesGroup);
+                ingredientesGroupRef.current = ingredientesGroup;
+
+                // Fondo de pared pizzería
+                const wallGeo = new THREE.PlaneGeometry(12, 8);
+                const wallMat = new THREE.MeshStandardMaterial({ color: 0x27272a, roughness: 0.9 });
+                const wall = new THREE.Mesh(wallGeo, wallMat);
+                wall.position.set(0, 3, -3);
+                scene.add(wall);
+
+                // Animación Loop
+                let animationFrameId;
+                const animate = () => {
+                    animationFrameId = requestAnimationFrame(animate);
+
+                    // Sutil rotación interactiva de la pizza al armarla
+                    if (pizzaMeshRef.current) {
+                        pizzaMeshRef.current.rotation.y += 0.002;
+                        if (salsaMeshRef.current) salsaMeshRef.current.rotation.y = pizzaMeshRef.current.rotation.y;
+                        if (quesoMeshRef.current) quesoMeshRef.current.rotation.y = pizzaMeshRef.current.rotation.y;
+                        if (ingredientesGroupRef.current) ingredientesGroupRef.current.rotation.y = pizzaMeshRef.current.rotation.y;
+                    }
+
+                    renderer.render(scene, camera);
+                };
+                animate();
+
+                // Manejo de Resize
+                const handleResize = () => {
+                    if (!mountRef.current) return;
+                    const w = mountRef.current.clientWidth;
+                    const h = mountRef.current.clientHeight;
+                    camera.aspect = w / h;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(w, h);
+                };
+                window.addEventListener('resize', handleResize);
+
+                return () => {
+                    cancelAnimationFrame(animationFrameId);
+                    window.removeEventListener('resize', handleResize);
+                    if (mountRef.current && renderer.domElement) {
+                        mountRef.current.removeChild(renderer.domElement);
+                    }
+                };
+            }, []);
+
+            // Generar nuevo cliente según nivel
+            const generarCliente = () => {
+                // Elegir receta aleatoria desbloqueada por el nivel
+                const receta = RECETAS[Math.floor(Math.random() * Math.min(RECETAS.length, Math.ceil(nivel / 2)))];
+                
+                // Bebida opcional según nivel
+                let bebidaPedida = null;
+                const bebidasCompatibles = BEBIDAS_DISPONIBLES.filter(b => nivel >= b.nivelMin);
+                if (bebidasCompatibles.length > 0 && Math.random() > 0.4) {
+                    bebidaPedida = bebidasCompatibles[Math.floor(Math.random() * bebidasCompatibles.length)];
+                }
+
+                // Acompañamiento opcional según nivel
+                let acompanamientoPedido = null;
+                const acompCompatibles = ACOMPANAMIENTOS_DISPONIBLES.filter(a => nivel >= a.nivelMin);
+                if (acompCompatibles.length > 0 && Math.random() > 0.5) {
+                    acompanamientoPedido = acompCompatibles[Math.floor(Math.random() * acompCompatibles.length)];
+                }
+
+                const nombresClientes = ["Mateo", "Sofia", "Lucas", "Valentina", "Joaquín", "Camila", "Gonzalo", "Martina"];
+                const clienteNombre = nombresClientes[Math.floor(Math.random() * nombresClientes.length)];
+
+                setClienteActual({
+                    nombre: clienteNombre,
+                    receta: receta,
+                    bebida: bebidaPedida,
+                    acompanamiento: acompanamientoPedido,
+                    icono: ['👦', '👧', '👨', '👩', '🧔', '👱‍♀️'][Math.floor(Math.random() * 6)]
+                });
+
+                setPacienciaCliente(100);
+                resetearMasa();
+                audio.playBell();
+            };
+
+            // Loop de tiempo del día y paciencia del cliente
+            useEffect(() => {
+                if (juegoPausado || faseDia === 'madrugada') return;
+
+                const timer = setInterval(() => {
+                    // Transcurso del día (Tarde -> Madrugada)
+                    setTiempoDia(prev => {
+                        if (prev <= 1) {
+                            cerrarPizzeriaMadrugada();
+                            return 0;
+                        }
+                        return prev - 0.2;
+                    });
+
+                    // Paciencia del cliente
+                    if (clienteActual) {
+                        setPacienciaCliente(prev => {
+                            // La paciencia baja más rápido en niveles más altos
+                            const velocidadBajada = 0.5 + (nivel * 0.08);
+                            if (prev <= 1) {
+                                mostrarFeedback("¡El cliente se fue enojado! 😿", "error");
+                                setClienteActual(null);
+                                setTimeout(generarCliente, 2000);
+                                return 0;
+                            }
+                            return prev - velocidadBajada;
+                        });
+                    } else {
+                        // Si no hay cliente, generar uno
+                        generarCliente();
+                    }
+                }, 200);
+
+                return () => clearInterval(timer);
+            }, [juegoPausado, faseDia, clienteActual, nivel]);
+
+            // Sistema de Cocción del Horno
+            useEffect(() => {
+                let timerHorno;
+                if (enHorno && !juegoPausado) {
+                    timerHorno = setInterval(() => {
+                        setNivelCoccion(prev => {
+                            audio.playOvenTimer();
+                            const nuevoNivel = prev + 2.5;
+                            
+                            // Actualizar color visual de la masa según la cocción
+                            if (pizzaMeshRef.current) {
+                                if (nuevoNivel < 70) {
+                                    pizzaMeshRef.current.material.color.setHex(0xf5d0a9); // Masa cruda
+                                } else if (nuevoNivel <= 92) {
+                                    pizzaMeshRef.current.material.color.setHex(0xd97706); // Dorado perfecto
+                                } else {
+                                    pizzaMeshRef.current.material.color.setHex(0x1c1917); // Quemado
+                                }
+                            }
+
+                            if (nuevoNivel >= 100) {
+                                setEnHorno(false);
+                                audio.playBurn();
+                                mostrarFeedback("¡La pizza se quemó por completo! 💥", "error");
+                                return 100;
+                            }
+                            return nuevoNivel;
+                        });
+                    }, 200);
+                }
+                return () => clearInterval(timerHorno);
+            }, [enHorno, juegoPausado]);
+
+            // --- ACCIONES DE LA PREPARACIÓN ---
+            const resetearMasa = () => {
+                setPasoPizza(1);
+                setMasaEstirada(0);
+                setTieneSalsa(false);
+                setTieneQueso(false);
+                setIngredientesAgregados([]);
+                setNivelCoccion(0);
+                setEnHorno(false);
+                setPizzaServida(false);
+                setBebidaServida(null);
+                setAcompanamientoServido(null);
+
+                // Resetear modelos 3D
+                if (pizzaMeshRef.current) {
+                    pizzaMeshRef.current.scale.set(1, 1, 1);
+                    pizzaMeshRef.current.material.color.setHex(0xf5d0a9);
+                }
+                if (salsaMeshRef.current) {
+                    salsaMeshRef.current.visible = false;
+                    salsaMeshRef.current.scale.set(1, 1, 1);
+                }
+                if (quesoMeshRef.current) {
+                    quesoMeshRef.current.visible = false;
+                    quesoMeshRef.current.scale.set(1, 1, 1);
+                }
+                if (ingredientesGroupRef.current) {
+                    while(ingredientesGroupRef.current.children.length > 0){ 
+                        ingredientesGroupRef.current.remove(ingredientesGroupRef.current.children[0]); 
+                    }
+                }
+            };
+
+            const estirarMasa = () => {
+                if (pasoPizza !== 1) return;
+                audio.playStretch();
+                setMasaEstirada(prev => {
+                    const nuevo = prev + 25;
+                    const factorEscala = 1 + (nuevo / 100) * 2.2;
+                    if (pizzaMeshRef.current) {
+                        pizzaMeshRef.current.scale.set(factorEscala, 1, factorEscala);
+                    }
+                    if (nuevo >= 100) {
+                        setPasoPizza(2);
+                        mostrarFeedback("¡Masa perfecta! Ahora agrega la salsa 🍅", "info");
+                    }
+                    return Math.min(nuevo, 100);
+                });
+            };
+
+            const agregarSalsa = () => {
+                if (pasoPizza !== 2) return;
+                audio.playSplat();
+                setTieneSalsa(true);
+                if (salsaMeshRef.current && pizzaMeshRef.current) {
+                    salsaMeshRef.current.visible = true;
+                    salsaMeshRef.current.scale.set(pizzaMeshRef.current.scale.x * 0.9, 1, pizzaMeshRef.current.scale.z * 0.9);
+                }
+                setPasoPizza(3);
+                mostrarFeedback("¡Salsa agregada! Pon el queso muzzarella 🧀", "info");
+            };
+
+            const agregarQueso = () => {
+                if (pasoPizza !== 3) return;
+                audio.playSplat();
+                setTieneQueso(true);
+                if (quesoMeshRef.current && pizzaMeshRef.current) {
+                    quesoMeshRef.current.visible = true;
+                    quesoMeshRef.current.scale.set(pizzaMeshRef.current.scale.x * 0.85, 1, pizzaMeshRef.current.scale.z * 0.85);
+                }
+                setPasoPizza(4);
+                mostrarFeedback("¡Queso muzzarella listo! Selecciona los ingredientes 🌿", "info");
+            };
+
+            const agregarIngrediente = (ingrediente) => {
+                if (pasoPizza !== 4) return;
+                audio.playSplat();
+
+                if (ingredientesAgregados.includes(ingrediente.id)) {
+                    // Quitar ingrediente
+                    setIngredientesAgregados(prev => prev.filter(i => i !== ingrediente.id));
+                } else {
+                    // Agregar ingrediente
+                    setIngredientesAgregados(prev => [...prev, ingrediente.id]);
+
+                    // Renderizar objetos 3D de los ingredientes sobre la pizza
+                    if (ingredientesGroupRef.current) {
+                        const count = 8;
+                        const radius = 0.5;
+                        for (let i = 0; i < count; i++) {
+                            const angle = (i / count) * Math.PI * 2 + Math.random() * 0.2;
+                            const r = (Math.random() * 0.4 + 0.2) * radius;
+                            const x = Math.cos(angle) * r;
+                            const z = Math.sin(angle) * r;
+
+                            const itemGeo = new THREE.SphereGeometry(0.04, 8, 8);
+                            const itemMat = new THREE.MeshStandardMaterial({ color: ingrediente.color });
+                            const itemMesh = new THREE.Mesh(itemGeo, itemMat);
+                            itemMesh.position.set(x, 0.02, z);
+                            ingredientesGroupRef.current.add(itemMesh);
+                        }
+                    }
+                }
+            };
+
+            const meterHorno = () => {
+                if (pasoPizza < 4) {
+                    mostrarFeedback("¡Primero debes armar la pizza!", "error");
+                    return;
+                }
+                setPasoPizza(5);
+                setEnHorno(true);
+                if (ovenLightRef.current) ovenLightRef.current.intensity = 2;
+                mostrarFeedback("¡Cocinando! Presiona 'Sacar del Horno' a tiempo 🔥", "info");
+            };
+
+            const sacarHorno = () => {
+                setEnHorno(false);
+                if (ovenLightRef.current) ovenLightRef.current.intensity = 0;
+
+                if (nivelCoccion < 60) {
+                    mostrarFeedback("La pizza está un poco cruda...", "warning");
+                } else if (nivelCoccion <= 92) {
+                    mostrarFeedback("¡Punto de cocción perfecto! 🏅", "success");
+                } else {
+                    mostrarFeedback("¡Se quemó la pizza!", "error");
+                }
+                setPasoPizza(6);
+            };
+
+            const servirPedidoCompleto = () => {
+                if (!clienteActual) return;
+
+                // Verificar receta
+                const ingredientesRequeridos = clienteActual.receta.ingredientes;
+                const tieneTodosIngredientes = ingredientesRequeridos.every(i => ingredientesAgregados.includes(i));
+                const noTieneExtras = ingredientesAgregados.length === ingredientesRequeridos.length;
+                const pizzaCorrecta = tieneTodosIngredientes && noTieneExtras && tieneSalsa && tieneQueso && nivelCoccion >= 55 && nivelCoccion <= 95;
+
+                // Verificar bebida y acompañamiento requeridos
+                const bebidaCorrecta = !clienteActual.bebida || bebidaServida === clienteActual.bebida.id;
+                const acompCorrecto = !clienteActual.acompanamiento || acompanamientoServido === clienteActual.acompanamiento.id;
+
+                if (pizzaCorrecta && bebidaCorrecta && acompCorrecto) {
+                    // Éxito Total
+                    const propina = Math.floor(pacienciaCliente / 5);
+                    const gananciaTotal = 50 + propina;
+                    setMonedas(prev => prev + gananciaTotal);
+                    setPuntos(prev => prev + 100);
+                    setBalanceDia(prev => ({
+                        clientesAtendidos: prev.clientesAtendidos + 1,
+                        ganancias: prev.ganancias + gananciaTotal
+                    }));
+
+                    audio.playSuccess();
+                    mostrarFeedback(`¡Cliente Feliz! Ganaste $${gananciaTotal} (Propina: $${propina}) 🪙`, "success");
+                } else {
+                    // Fallo o error en la orden
+                    const gananciaParcial = 15;
+                    setMonedas(prev => prev + gananciaParcial);
+                    mostrarFeedback("El cliente no quedó muy satisfecho con la orden... 😕", "warning");
+                }
+
+                setClienteActual(null);
+                resetearMasa();
+                setTimeout(generarCliente, 1500);
+            };
+
+            const cerrarPizzeriaMadrugada = () => {
+                setFaseDia('madrugada');
+                setResumenMadrugada(true);
+            };
+
+            const avanzarSiguienteDia = () => {
+                setResumenMadrugada(false);
+                setNivel(prev => Math.min(prev + 1, 100)); // Subir nivel hasta el 100
+                setTiempoDia(100);
+                setFaseDia('tarde');
+                setBalanceDia({ clientesAtendidos: 0, ganancias: 0 });
+                generarCliente();
+                mostrarFeedback(`¡Amaneció! Bienvenido al Nivel ${nivel + 1} ☀️`, "info");
+            };
+
+            const mostrarFeedback = (texto, tipo) => {
+                setMensajeFeedback({ texto, tipo });
+                setTimeout(() => setMensajeFeedback(null), 3000);
+            };
+
+            return (
+                <div className="relative w-full h-full flex flex-col justify-between overflow-hidden bg-slate-900">
+                    
+                    {/* CANVAS THREE.JS DE FONDO */}
+                    <div ref={mountRef} className="absolute inset-0 z-0" />
+
+                    {/* BARRA SUPERIOR / HEADER DE ESTADO */}
+                    <div className="relative z-10 p-3 bg-slate-900/80 backdrop-blur-md border-b border-amber-500/30 flex justify-between items-center shadow-lg">
+                        <div className="flex items-center gap-3">
+                            <div className="bg-amber-500 text-slate-950 px-3 py-1 rounded-full font-bold text-sm md:text-base flex items-center gap-1 shadow">
+                                <span>⭐</span>
+                                <span>Nivel {nivel}</span>
+                            </div>
+                            <div className="bg-emerald-600/90 text-white px-3 py-1 rounded-full font-bold text-sm md:text-base flex items-center gap-1 shadow">
+                                <span>🪙</span>
+                                <span>${monedas}</span>
+                            </div>
+                        </div>
+
+                        {/* Reloj del Día / Ciclo Sol */}
+                        <div className="flex items-center gap-2 bg-slate-800/90 px-3 py-1 rounded-full border border-slate-700">
+                            <span className="text-xl">{faseDia === 'madrugada' ? '🌙' : '☀️'}</span>
+                            <div className="w-20 md:w-32 bg-slate-700 h-2.5 rounded-full overflow-hidden">
+                                <div 
+                                    className="bg-amber-400 h-full transition-all duration-300"
+                                    style={{ width: `${tiempoDia}%` }}
+                                />
+                            </div>
+                        </div>
+
+                        {/* Botones de Pausa y Sonido */}
+                        <div className="flex items-center gap-2">
+                            <button 
+                                onClick={() => audio.toggleMute()}
+                                className="bg-slate-800 hover:bg-slate-700 text-white p-2 rounded-full border border-slate-700"
+                            >
+                                🔊
+                            </button>
+                            <button 
+                                onClick={() => setJuegoPausado(!juegoPausado)}
+                                className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold p-2 px-3 rounded-full shadow"
+                            >
+                                {juegoPausado ? '▶️' : '⏸️'}
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* MENSAJES FEEDBACK / POPUP */}
+                    {mensajeFeedback && (
+                        <div className="absolute top-16 left-1/2 transform -translate-x-1/2 z-30 px-6 py-2 rounded-full font-bold text-sm md:text-base shadow-2xl transition-all duration-300 animate-bounce flex items-center gap-2 border bg-slate-900 border-amber-400 text-amber-300">
+                            <span>{mensajeFeedback.texto}</span>
+                        </div>
+                    )}
+
+                    {/* PANEL DEL CLIENTE Y PEDIDO ACTUAL */}
+                    {clienteActual && !resumenMadrugada && (
+                        <div className="relative z-10 m-3 p-3 bg-slate-900/90 backdrop-blur-md rounded-2xl border border-amber-500/40 shadow-xl max-w-md mx-auto w-full">
+                            <div className="flex items-center justify-between mb-2">
+                                <div className="flex items-center gap-2">
+                                    <span className="text-3xl">{clienteActual.icono}</span>
+                                    <div>
+                                        <h3 className="font-bold text-white text-base leading-tight">{clienteActual.nombre}</h3>
+                                        <p className="text-xs text-amber-400 font-medium">Pide: {clienteActual.receta.nombre}</p>
+                                    </div>
+                                </div>
+
+                                {/* Barra Paciencia */}
+                                <div className="w-24 bg-slate-800 rounded-full h-3 overflow-hidden border border-slate-700">
+                                    <div 
+                                        className={`h-full transition-all duration-300 ${pacienciaCliente > 50 ? 'bg-emerald-500' : pacienciaCliente > 25 ? 'bg-amber-500' : 'bg-rose-500'}`}
+                                        style={{ width: `${pacienciaCliente}%` }}
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Detalle de Bebida o Acompañamiento pedido */}
+                            {(clienteActual.bebida || clienteActual.acompanamiento) && (
+                                <div className="flex gap-2 text-xs bg-slate-800/80 p-2 rounded-lg mt-1 border border-slate-700">
+                                    {clienteActual.bebida && (
+                                        <span className="bg-slate-700 px-2 py-0.5 rounded text-slate-200">
+                                            {clienteActual.bebida.icon} {clienteActual.bebida.nombre}
+                                        </span>
+                                    )}
+                                    {clienteActual.acompanamiento && (
+                                        <span className="bg-slate-700 px-2 py-0.5 rounded text-slate-200">
+                                            {clienteActual.acompanamiento.icon} {clienteActual.acompanamiento.nombre}
+                                        </span>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* BARRA DE CONTROLES INFERIORES / PASO A PASO */}
+                    <div className="relative z-10 p-3 bg-slate-900/95 backdrop-blur-md border-t border-amber-500/30">
+                        
+                        {/* Indicador de pasos */}
+                        <div className="flex justify-between items-center max-w-md mx-auto mb-3 text-xs font-bold text-slate-400">
+                            <span className={pasoPizza >= 1 ? 'text-amber-400' : ''}>1. Masa</span>
+                            <span className={pasoPizza >= 2 ? 'text-amber-400' : ''}>2. Salsa</span>
+                            <span className={pasoPizza >= 3 ? 'text-amber-400' : ''}>3. Queso</span>
+                            <span className={pasoPizza >= 4 ? 'text-amber-400' : ''}>4. Toppings</span>
+                            <span className={pasoPizza >= 5 ? 'text-amber-400' : ''}>5. Horno</span>
+                        </div>
+
+                        {/* ACCIONES DEL PASO 1: ESTIRAR MASA */}
+                        {pasoPizza === 1 && (
+                            <div className="flex flex-col items-center gap-2 max-w-md mx-auto">
+                                <button 
+                                    onClick={estirarMasa}
+                                    className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl shadow-lg text-base pizza-btn flex justify-center items-center gap-2"
+                                >
+                                    <span>🫓</span>
+                                    <span>Estirar Masa ({masaEstirada}%)</span>
+                                </button>
+                            </div>
+                        )}
+
+                        {/* ACCIONES DEL PASO 2 Y 3: SALSA Y QUESO */}
+                        {pasoPizza === 2 && (
+                            <button 
+                                onClick={agregarSalsa}
+                                className="w-full max-w-md mx-auto block py-3 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl shadow-lg text-base pizza-btn"
+                            >
+                                🍅 Poner Salsa de Tomate
+                            </button>
+                        )}
+
+                        {pasoPizza === 3 && (
+                            <button 
+                                onClick={agregarQueso}
+                                className="w-full max-w-md mx-auto block py-3 bg-yellow-500 hover:bg-yellow-400 text-slate-950 font-bold rounded-xl shadow-lg text-base pizza-btn"
+                            >
+                                🧀 Agregar Queso Muzzarella
+                            </button>
+                        )}
+
+                        {/* ACCIONES DEL PASO 4: TOPPINGS / INGREDIENTES */}
+                        {pasoPizza === 4 && (
+                            <div className="max-w-md mx-auto flex flex-col gap-2">
+                                <div className="grid grid-cols-3 gap-2">
+                                    {INGREDIENTES_DISPONIBLES.map(ing => {
+                                        const seleccionado = ingredientesAgregados.includes(ing.id);
+                                        return (
+                                            <button
+                                                key={ing.id}
+                                                onClick={() => agregarIngrediente(ing)}
+                                                className={`p-2 rounded-lg text-xs font-bold border transition-all flex items-center justify-center gap-1 ${seleccionado ? 'bg-amber-500 border-amber-300 text-slate-950' : 'bg-slate-800 border-slate-700 text-white'}`}
+                                            >
+                                                <span>{ing.icon}</span>
+                                                <span>{ing.nombre}</span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+
+                                {/* Selección de Bebidas desbloqueadas */}
+                                {BEBIDAS_DISPONIBLES.filter(b => nivel >= b.nivelMin).length > 0 && (
+                                    <div className="flex gap-2 overflow-x-auto py-1">
+                                        {BEBIDAS_DISPONIBLES.filter(b => nivel >= b.nivelMin).map(bebida => (
+                                            <button
+                                                key={bebida.id}
+                                                onClick={() => setBebidaServida(bebida.id)}
+                                                className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 border ${bebidaServida === bebida.id ? 'bg-blue-600 border-blue-300 text-white' : 'bg-slate-800 border-slate-700 text-slate-300'}`}
+                                            >
+                                                <span>{bebida.icon}</span>
+                                                <span>{bebida.nombre}</span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+
+                                {/* Selección de Acompañamientos */}
+                                {ACOMPANAMIENTOS_DISPONIBLES.filter(a => nivel >= a.nivelMin).length > 0 && (
+                                    <div className="flex gap-2 overflow-x-auto py-1">
+                                        {ACOMPANAMIENTOS_DISPONIBLES.filter(a => nivel >= a.nivelMin).map(acomp => (
+                                            <button
+                                                key={acomp.id}
+                                                onClick={() => setAcompanamientoServido(acomp.id)}
+                                                className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 border ${acompanamientoServido === acomp.id ? 'bg-amber-600 border-amber-300 text-white' : 'bg-slate-800 border-slate-700 text-slate-300'}`}
+                                            >
+                                                <span>{acomp.icon}</span>
+                                                <span>{acomp.nombre}</span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+
+                                <button 
+                                    onClick={meterHorno}
+                                    className="w-full py-3 bg-orange-600 hover:bg-orange-500 text-white font-bold rounded-xl shadow-lg text-base pizza-btn mt-1"
+                                >
+                                    🔥 Meter la Pizza al Horno
+                                </button>
+                            </div>
+                        )}
+
+                        {/* ACCIONES DEL PASO 5 Y 6: HORNO Y SERVIR */}
+                        {pasoPizza === 5 && (
+                            <div className="max-w-md mx-auto flex flex-col gap-2">
+                                <div className="flex justify-between items-center text-xs font-bold text-slate-300">
+                                    <span>Nivel de Cocción:</span>
+                                    <span className={nivelCoccion > 92 ? 'text-red-500' : nivelCoccion >= 70 ? 'text-emerald-400' : 'text-amber-400'}>
+                                        {Math.floor(nivelCoccion)}%
+                                    </span>
+                                </div>
+                                <div className="w-full bg-slate-800 h-4 rounded-full overflow-hidden border border-slate-700">
+                                    <div 
+                                        className={`h-full transition-all duration-150 ${nivelCoccion > 92 ? 'bg-red-600' : nivelCoccion >= 70 ? 'bg-emerald-500' : 'bg-amber-400'}`}
+                                        style={{ width: `${nivelCoccion}%` }}
+                                    />
+                                </div>
+                                <button 
+                                    onClick={sacarHorno}
+                                    className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl shadow-lg text-base pizza-btn"
+                                >
+                                    🖐️ Sacar del Horno
+                                </button>
+                            </div>
+                        )}
+
+                        {pasoPizza === 6 && (
+                            <div className="max-w-md mx-auto">
+                                <button 
+                                    onClick={servirPedidoCompleto}
+                                    className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg text-lg pizza-btn animate-pulse"
+                                >
+                                    🛎️ Servir Pedido al Cliente
+                                </button>
+                            </div>
+                        )}
+
+                    </div>
+
+                    {/* MODAL BALANCE MADRUGADA Y SUBIR NIVEL */}
+                    {resumenMadrugada && (
+                        <div className="absolute inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4">
+                            <div className="bg-slate-900 border border-amber-500/50 rounded-3xl p-6 max-w-sm w-full text-center shadow-2xl">
+                                <div className="text-5xl mb-2">🌙</div>
+                                <h2 className="text-2xl font-bold text-white mb-1">Cierre de Pizzería</h2>
+                                <p className="text-amber-400 text-sm mb-4">Es de madrugada. ¡Hora de descansar!</p>
+
+                                <div className="bg-slate-800/80 rounded-2xl p-4 border border-slate-700 mb-6 text-left space-y-2">
+                                    <div className="flex justify-between text-sm">
+                                        <span className="text-slate-400">Clientes Atendidos:</span>
+                                        <span className="font-bold text-white">{balanceDia.clientesAtendidos}</span>
+                                    </div>
+                                    <div className="flex justify-between text-sm">
+                                        <span className="text-slate-400">Ganancias del Día:</span>
+                                        <span className="font-bold text-emerald-400">+${balanceDia.ganancias}</span>
+                                    </div>
+                                    <div className="flex justify-between text-sm pt-2 border-t border-slate-700">
+                                        <span className="text-slate-400">Nuevo Nivel:</span>
+                                        <span className="font-bold text-amber-400">Nivel {nivel + 1}</span>
+                                    </div>
+                                </div>
+
+                                <button 
+                                    onClick={avanzarSiguienteDia}
+                                    className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl shadow-lg text-base pizza-btn"
+                                >
+                                    ☀️ Amanecer y Abrir Pizzería
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* MODAL PAUSA */}
+                    {juegoPausado && (
+                        <div className="absolute inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+                            <div className="bg-slate-900 border border-slate-700 rounded-3xl p-6 max-w-sm w-full text-center shadow-2xl">
+                                <h2 className="text-2xl font-bold text-white mb-4">Juego Pausado</h2>
+                                <div className="flex flex-col gap-3">
+                                    <button 
+                                        onClick={() => setJuegoPausado(false)}
+                                        className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl"
+                                    >
+                                        ▶️ Reanudar
+                                    </button>
+                                    <button 
+                                        onClick={() => {
+                                            localStorage.removeItem('juego_pizza_progreso');
+                                            window.location.reload();
+                                        }}
+                                        className="w-full py-3 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl"
+                                    >
+                                        🔄 Reiniciar Progreso
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                </div>
+            );
+        }
+
+        // Renderizar React
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
